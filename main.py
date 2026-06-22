@@ -15,7 +15,7 @@ from config import APP_PORT, WEBHOOK_SECRET, OWNER_PHONE, REMINDER_HOUR_1, REMIN
 from parser import parse_catatan, parse_ocr_items, format_rupiah
 from firestore_db import (
     catat_transaksi, hitung_total_hari_ini, hitung_total_bulan_ini,
-    save_ocr_result, get_budget_status, get_user_by_phone,
+    save_ocr_result, get_budget_status, get_user_by_phone, verify_whatsapp,
 )
 from waha import send_text
 from ocr import extract_text_from_image
@@ -66,7 +66,7 @@ app = FastAPI(title="Flowku Chatbot", lifespan=lifespan)
 # HELPERS
 # ─────────────────────────────────────────────
 
-def format_catatan_msg(saved: dict, catatan: dict) -> str:
+def format_catatan_msg(saved: dict, catatan: dict, phone: str) -> str:
     """Format pesan konfirmasi setelah catat."""
     emoji = "💸" if catatan["type"] == "expense" else "💰"
     tipe_label = "Pengeluaran" if catatan["type"] == "expense" else "Pemasukan"
@@ -74,13 +74,13 @@ def format_catatan_msg(saved: dict, catatan: dict) -> str:
     msg = (
         f"✅ {tipe_label} tercatat!\n\n"
         f"{emoji} *{format_rupiah(catatan['amount'])}*\n"
-        f"📂 Kategori: {catatan['category'].capitalize()}\n"
+        f"📂 Kategori: {catatan['category'].replace('_', ' ').capitalize()}\n"
     )
     if catatan.get("description"):
         msg += f"📝 {catatan['description']}\n"
 
     # Ringkasan hari ini
-    total = hitung_total_hari_ini(OWNER_PHONE)
+    total = hitung_total_hari_ini(phone)
     msg += (
         f"\n📊 Hari ini:\n"
         f"  💸 Keluar: {format_rupiah(total['pengeluaran'])}\n"
@@ -90,7 +90,7 @@ def format_catatan_msg(saved: dict, catatan: dict) -> str:
     msg += f"  📝 {len(total['catatan'])} transaksi"
 
     # Budget warning (kalau ada)
-    budget = get_budget_status(OWNER_PHONE)
+    budget = get_budget_status(phone)
     if budget and catatan["category"] in budget:
         b = budget[catatan["category"]]
         if b["percentage"] >= 80:
@@ -111,13 +111,21 @@ def format_laporan(catatan: list, total_pengeluaran: int, total_pemasukan: int, 
     by_cat = {}
     for t in catatan:
         if t.get("type") == "expense":
-            cat = t.get("category", "other")
+            cat = t.get("category", "other_expense")
             by_cat[cat] = by_cat.get(cat, 0) + t.get("amount", 0)
+
+    emojis = {
+        "food": "🍔", "transport": "🚗", "shopping": "🛍️", "health": "💊",
+        "entertainment": "🎮", "bills": "⚡", "education": "📚", "beauty": "💄",
+        "home": "🏠", "investment": "📈", "social": "🎁", "saving": "🎯",
+        "other_expense": "📦",
+    }
 
     if by_cat:
         msg += "Pengeluaran per kategori:\n"
         for cat, jumlah in sorted(by_cat.items(), key=lambda x: -x[1]):
-            msg += f"  • {cat.capitalize()}: {format_rupiah(jumlah)}\n"
+            emoji = emojis.get(cat, "•")
+            msg += f"  {emoji} {cat.replace('_', ' ').capitalize()}: {format_rupiah(jumlah)}\n"
 
     msg += f"\n💸 Total Keluar: {format_rupiah(total_pengeluaran)}"
     if total_pemasukan > 0:
@@ -156,40 +164,64 @@ async def cmd_help() -> str:
 
 
 async def cmd_kategori() -> str:
-    cats = ["food", "transport", "shopping", "entertainment",
-            "bills", "health", "education", "other"]
-    msg = "📂 Kategori yang tersedia:\n\n"
-    emojis = {
-        "food": "🍔", "transport": "🚗", "shopping": "🛍️",
-        "entertainment": "🎬", "bills": "📄", "health": "💊",
-        "education": "📚", "other": "📦",
-    }
-    for cat in cats:
-        msg += f"  {emojis.get(cat, '•')} {cat.capitalize()}\n"
-    msg += "\nContoh: *catat 50000 food*"
+    msg = "📂 *Kategori Default Flowku*\n\n"
+    msg += "*💸 PENGELUARAN:*\n"
+    expense_cats = [
+        ("food", "🍔", "Makan & Minum"),
+        ("transport", "🚗", "Transportasi"),
+        ("shopping", "🛍️", "Belanja"),
+        ("health", "💊", "Kesehatan"),
+        ("entertainment", "🎮", "Hiburan"),
+        ("bills", "⚡", "Tagihan & Utilitas"),
+        ("education", "📚", "Pendidikan"),
+        ("beauty", "💄", "Kecantikan"),
+        ("home", "🏠", "Rumah Tangga"),
+        ("investment", "📈", "Investasi"),
+        ("social", "🎁", "Sosial & Hadiah"),
+        ("saving", "🎯", "Tabungan Goal"),
+        ("other_expense", "📦", "Lainnya"),
+    ]
+    for cat, emoji, label in expense_cats:
+        msg += f"  {emoji} {label} (`{cat}`)\n"
+        
+    msg += "\n*💰 PEMASUKAN:*\n"
+    income_cats = [
+        ("salary", "💰", "Gaji"),
+        ("freelance", "💻", "Freelance"),
+        ("business", "🏪", "Bisnis"),
+        ("investment_in", "📈", "Hasil Investasi"),
+        ("bonus", "🎉", "Bonus"),
+        ("transfer", "💸", "Transfer Masuk"),
+        ("other_income", "✨", "Lainnya"),
+    ]
+    for cat, emoji, label in income_cats:
+        msg += f"  {emoji} {label} (`{cat}`)\n"
+        
+    msg += "\nContoh: *catat 50000 makan*"
     return msg
 
 
-async def cmd_hari_ini() -> str:
-    total = hitung_total_hari_ini(OWNER_PHONE)
+async def cmd_hari_ini(phone: str) -> str:
+    total = hitung_total_hari_ini(phone)
     return format_laporan(total["catatan"], total["pengeluaran"], total["pemasukan"], "Hari Ini")
 
 
-async def cmd_bulan_ini() -> str:
-    total = hitung_total_bulan_ini(OWNER_PHONE)
+async def cmd_bulan_ini(phone: str) -> str:
+    total = hitung_total_bulan_ini(phone)
     return format_laporan(total["catatan"], total["pengeluaran"], total["pemasukan"], "Bulan Ini")
 
 
-async def cmd_anggaran() -> str:
-    budget = get_budget_status(OWNER_PHONE)
+async def cmd_anggaran(phone: str) -> str:
+    budget = get_budget_status(phone)
     if not budget:
         return "Belum ada anggaran yang diset. Set di aplikasi Flowku dulu ya."
 
     msg = "📊 Status Anggaran Bulan Ini\n\n"
     emojis = {
-        "food": "🍔", "transport": "🚗", "shopping": "🛍️",
-        "entertainment": "🎬", "bills": "📄", "health": "💊",
-        "education": "📚", "other": "📦",
+        "food": "🍔", "transport": "🚗", "shopping": "🛍️", "health": "💊",
+        "entertainment": "🎮", "bills": "⚡", "education": "📚", "beauty": "💄",
+        "home": "🏠", "investment": "📈", "social": "🎁", "saving": "🎯",
+        "other_expense": "📦",
     }
 
     for cat, info in budget.items():
@@ -197,7 +229,7 @@ async def cmd_anggaran() -> str:
         pct = info["percentage"]
         status = "✅" if pct < 80 else "⚠️" if pct < 100 else "🚨"
         msg += (
-            f"{status} {emoji} {cat.capitalize()}\n"
+            f"{status} {emoji} {cat.replace('_', ' ').capitalize()}\n"
             f"   {format_rupiah(info['spent'])} / {format_rupiah(info['limit'])} ({pct}%)\n\n"
         )
 
@@ -212,7 +244,38 @@ async def handle_text_message(phone: str, text: str) -> str:
     """Proses pesan teks dan return balasan."""
     msg = text.strip().lower()
 
-    # Commands
+    # 1. Lookup user from Firestore
+    user = get_user_by_phone(phone)
+    if not user:
+        return (
+            "⚠️ *Nomor WhatsApp Belum Terdaftar*\n\n"
+            "Nomor Anda belum terdaftar di sistem Flowku.\n"
+            "Silakan daftar/masuk ke aplikasi Flowku dan simpan nomor WhatsApp Anda di halaman Profil."
+        )
+
+    # 2. Check if verification command is sent
+    if msg == "mulai flowku":
+        success = verify_whatsapp(phone)
+        if success:
+            return (
+                "🎉 *WhatsApp Berhasil Diverifikasi!*\n\n"
+                "Selamat! WhatsApp Bot Flowku Anda telah aktif. Sekarang Anda dapat mulai mencatat keuangan langsung dari chat ini.\n\n"
+                "Coba ketik: *catat 50rb makan siang*"
+            )
+        else:
+            return "❌ Gagal melakukan verifikasi. Silakan coba lagi nanti."
+
+    # 3. Enforce verification check
+    if not user.get("waVerified", False):
+        return (
+            "⚠️ *Verifikasi Diperlukan*\n\n"
+            "Nomor WhatsApp Anda sudah disimpan di Profil, tetapi belum diaktifkan.\n\n"
+            "Silakan kirim pesan *Mulai Flowku* (tanpa tanda kutip) ke chat ini untuk mengaktifkan bot."
+        )
+
+    # 4. If verified, continue to standard commands & parsing
+    custom_categories = user.get("customCategories", [])
+
     if msg in ["help", "bantuan", "menu", "/start", "/help"]:
         return await cmd_help()
 
@@ -220,16 +283,16 @@ async def handle_text_message(phone: str, text: str) -> str:
         return await cmd_kategori()
 
     if msg in ["hari ini", "today", "laporan hari ini"]:
-        return await cmd_hari_ini()
+        return await cmd_hari_ini(phone)
 
     if msg in ["bulan ini", "this month", "laporan bulan ini"]:
-        return await cmd_bulan_ini()
+        return await cmd_bulan_ini(phone)
 
     if msg in ["anggaran", "budget", "budget status"]:
-        return await cmd_anggaran()
+        return await cmd_anggaran(phone)
 
     # Try parse as catatan
-    catatan = parse_catatan(text)
+    catatan = parse_catatan(text, custom_categories=custom_categories)
     if catatan:
         saved = catat_transaksi(
             user_phone=phone,
@@ -239,12 +302,9 @@ async def handle_text_message(phone: str, text: str) -> str:
             keterangan=catatan.get("description", ""),
         )
         if saved:
-            return format_catatan_msg(saved, catatan)
+            return format_catatan_msg(saved, catatan, phone)
         else:
-            return (
-                "❌ Gagal menyimpan transaksi.\n"
-                "Pastikan nomor WA kamu sudah terdaftar di Flowku."
-            )
+            return "❌ Gagal menyimpan transaksi. Silakan hubungi admin."
 
     # Unknown command
     return (
@@ -256,6 +316,25 @@ async def handle_text_message(phone: str, text: str) -> str:
 
 async def handle_image_message(phone: str, media_url: str) -> str:
     """Proses gambar (foto struk) via OCR."""
+    # 1. Lookup user from Firestore
+    user = get_user_by_phone(phone)
+    if not user:
+        return (
+            "⚠️ *Nomor WhatsApp Belum Terdaftar*\n\n"
+            "Nomor Anda belum terdaftar di sistem Flowku.\n"
+            "Silakan daftar/masuk ke aplikasi Flowku dan simpan nomor WhatsApp Anda di halaman Profil."
+        )
+
+    # 2. Enforce verification check
+    if not user.get("waVerified", False):
+        return (
+            "⚠️ *Verifikasi Diperlukan*\n\n"
+            "Nomor WhatsApp Anda belum diaktifkan.\n\n"
+            "Silakan kirim pesan *Mulai Flowku* (tanpa tanda kutip) ke chat ini untuk mengaktifkan bot."
+        )
+
+    custom_categories = user.get("customCategories", [])
+
     if not media_url:
         return "Gagal terima gambar. Coba kirim ulang."
 
@@ -270,7 +349,7 @@ async def handle_image_message(phone: str, media_url: str) -> str:
             "• Atau catat manual: *catat 25000 makan*"
         )
 
-    items = parse_ocr_items(raw_text)
+    items = parse_ocr_items(raw_text, custom_categories=custom_categories)
 
     if not items:
         return (
@@ -302,7 +381,7 @@ async def handle_image_message(phone: str, media_url: str) -> str:
         msg += f"  • {item['nama']}: {format_rupiah(item['harga'])}\n"
     msg += f"\n💸 Total: {format_rupiah(total)}"
 
-    daily = hitung_total_hari_ini(OWNER_PHONE)
+    daily = hitung_total_hari_ini(phone)
     msg += f"\n\n📊 Total hari ini: {format_rupiah(daily['pengeluaran'])}"
 
     return msg

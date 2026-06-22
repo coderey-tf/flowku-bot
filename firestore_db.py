@@ -41,6 +41,18 @@ def get_user_by_phone(phone: str) -> dict | None:
     return None
 
 
+def verify_whatsapp(phone: str) -> bool:
+    """
+    Set waVerified = True untuk user dengan waPhone tersebut.
+    """
+    db = get_db()
+    docs = db.collection("users").where("waPhone", "==", phone).limit(1).stream()
+    for doc in docs:
+        doc.reference.update({"waVerified": True})
+        return True
+    return False
+
+
 def get_couple(uid: str) -> dict | None:
     """
     Ambil data couple berdasarkan uid.

@@ -11,7 +11,7 @@ Format yang didukung:
 """
 import re
 
-# Mapping kata kunci ke kategori (sesuai schema Flowku)
+# Mapping kata kunci ke kategori pengeluaran (sesuai schema Flowku)
 CATEGORY_KEYWORDS = {
     "food": ["makan", "minum", "kopi", "teh", "jus", "nasi", "ayam", "mie", "sate", "bakso",
              "snack", "cemilan", "sarapan", "makan siang", "makan malam", "gofood", "grabfood",
@@ -20,15 +20,35 @@ CATEGORY_KEYWORDS = {
                   "kereta", "mrt", "taksi", "bbm", "motor", "mobil", "angkot", "transjakarta"],
     "shopping": ["belanja", "shopping", "supermarket", "indomaret", "alfamart", "toko",
                  "market", "shopee", "tokopedia", "lazada", "bukalapak", "mall"],
-    "entertainment": ["hiburan", "nonton", "film", "game", "musik", "spotify", "netflix",
-                      "youtube", "karaoke", "bioskop", "liburan", "jalan-jalan"],
-    "bills": ["tagihan", "listrik", "air", "internet", "wifi", "pulsa", "bpjs", "cicilan",
-              "sewa", "kos", "kontrakan", "pdam", "telepon", "asuransi"],
     "health": ["kesehatan", "obat", "dokter", "rumah sakit", "apotek", "vitamin",
-               "klinik", "medical", "checkup"],
+               "klinik", "medical", "checkup", "sakit", "therapi", "rawat"],
+    "entertainment": ["hiburan", "nonton", "film", "game", "musik", "spotify", "netflix",
+                      "youtube", "karaoke", "bioskop", "liburan", "jalan-jalan", "wisata", "rekreasi"],
+    "bills": ["tagihan", "listrik", "air", "internet", "wifi", "pulsa", "bpjs", "cicilan",
+              "sewa", "kos", "kontrakan", "pdam", "telepon", "asuransi", "token", "paket data"],
     "education": ["pendidikan", "buku", "kursus", "sekolah", "kuliah", "training",
-                   "seminar", "workshop", "spp"],
-    "other": ["lainnya", "other", "misc", "donasi", "sedekah", "hadiah", "transfer"],
+                  "seminar", "workshop", "spp", "les", "akademik"],
+    "beauty": ["kecantikan", "salon", "skincare", "kosmetik", "makeup", "facial", "creambath",
+               "potong rambut", "pangkas", "beauty", "spa"],
+    "home": ["rumah tangga", "dapur", "kasur", "lemari", "meja", "kursi", "alat dapur", "sabun",
+             "shampoo", "detergen", "sapu", "pel", "renovasi"],
+    "investment": ["investasi", "saham", "reksadana", "crypto", "kripto", "obligasi", "emas",
+                   "reksa dana", "bibit", "bareksa", "invest"],
+    "social": ["sosial", "hadiah", "kado", "donasi", "sedekah", "zakat", "kondangan", "sumbangan",
+               "tumpengan", "gift", "donation"],
+    "saving": ["tabungan", "saving", "celengan", "simpanan", "tabung", "goal"],
+    "other_expense": ["lainnya", "other", "misc", "lain-lain"],
+}
+
+# Mapping kata kunci ke kategori pemasukan (sesuai schema Flowku)
+INCOME_CATEGORY_KEYWORDS = {
+    "salary": ["gaji", "salary", "gajian", "payroll", "upah"],
+    "freelance": ["freelance", "proyek", "project", "sambilan", "desain", "coding", "nulis", "side hustle"],
+    "business": ["bisnis", "usaha", "jualan", "dagang", "toko", "omset", "omzet", "warung", "untung", "profit", "sales", "penjualan"],
+    "investment_in": ["dividen", "bunga", "kupon", "profit investasi", "capital gain", "hasil saham", "imbal hasil"],
+    "bonus": ["bonus", "thr", "insentif", "hadiah", "giveaway", "tips", "reward"],
+    "transfer": ["transfer masuk", "kiriman", "ditransfer", "dikirimi", "uang masuk", "transfer"],
+    "other_income": ["lainnya", "other", "misc", "lain-lain", "pemasukan", "masuk", "income", "pendapatan"],
 }
 
 INCOME_KEYWORDS = ["gaji", "pemasukan", "masuk", "income", "hadiah", "transfer masuk",
@@ -61,17 +81,34 @@ def parse_amount(text: str) -> int:
     return 0
 
 
-def detect_category(text: str) -> str:
-    """Deteksi kategori dari text."""
+def detect_category(text: str, tx_type: str = "expense", custom_categories: list = None) -> str:
+    """Deteksi kategori dari text dengan prioritas kategori kustom lalu default."""
     text_lower = text.lower()
-    for category, keywords in CATEGORY_KEYWORDS.items():
-        for keyword in keywords:
-            if keyword in text_lower:
-                return category
-    return "other"
+
+    # 1. Cek custom categories dari Firestore
+    if custom_categories:
+        for c in custom_categories:
+            if c.get("type") == tx_type:
+                label = c.get("label", "")
+                if label and label.lower() in text_lower:
+                    return c.get("id")
+
+    # 2. Cek kategori statis bawaan
+    if tx_type == "income":
+        for category, keywords in INCOME_CATEGORY_KEYWORDS.items():
+            for keyword in keywords:
+                if keyword in text_lower:
+                    return category
+        return "other_income"
+    else:
+        for category, keywords in CATEGORY_KEYWORDS.items():
+            for keyword in keywords:
+                if keyword in text_lower:
+                    return category
+        return "other_expense"
 
 
-def parse_catatan(message: str) -> dict | None:
+def parse_catatan(message: str, custom_categories: list = None) -> dict | None:
     """
     Parse pesan jadi dict transaksi.
     Returns: {type, amount, category, description} atau None kalau gagal.
@@ -113,7 +150,7 @@ def parse_catatan(message: str) -> dict | None:
         return None
 
     # Detect category
-    category = detect_category(description if description else msg)
+    category = detect_category(description if description else msg, tx_type=tx_type, custom_categories=custom_categories)
 
     return {
         "type": tx_type,
@@ -123,7 +160,7 @@ def parse_catatan(message: str) -> dict | None:
     }
 
 
-def parse_ocr_items(text: str) -> list:
+def parse_ocr_items(text: str, custom_categories: list = None) -> list:
     """
     Parse teks OCR struk jadi list item pengeluaran.
     """
@@ -155,7 +192,7 @@ def parse_ocr_items(text: str) -> list:
                         items.append({
                             "nama": name_part,
                             "harga": price,
-                            "kategori": detect_category(name_part),
+                            "kategori": detect_category(name_part, tx_type="expense", custom_categories=custom_categories),
                         })
             except ValueError:
                 continue
