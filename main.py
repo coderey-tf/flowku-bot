@@ -4,6 +4,7 @@ Menerima webhook dari WAHA, proses pesan, simpan ke Firestore.
 Schema sesuai BACKEND_MIGRATION_GUIDE.md
 """
 import logging
+import json
 import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
@@ -419,12 +420,52 @@ async def handle_incoming_message(payload: dict):
     if payload.get("fromMe", False):
         return
 
+    # Extract phone - support both legacy (chatId) and GOWS (from/_data) formats
     chat_id = payload.get("chatId", "")
-    phone = chat_id.replace("@c.us", "").replace("@g.us", "")
+    if chat_id:
+        phone = chat_id.replace("@c.us", "").replace("@g.us", "")
+    else:
+        # GOWS format: _data may be dict or JSON string
+        
+        _data = payload.get("_data", {})
+        if isinstance(_data, str):
+            try:
+                _data = json.loads(_data)
+            except Exception:
+                _data = {}
+        _info = _data.get("Info", {}) if isinstance(_data, dict) else {}
+        sender_alt = _info.get("SenderAlt", "")
+        if sender_alt:
+            phone = sender_alt
+            phone = phone.replace("@s.whatsapp.net", "").replace("@c.us", "")
+            phone = phone.split(":")[0]  # strip device suffix
+        else:
+            # Try Chat field - might be phone@s.whatsapp.net
+            chat_raw = _info.get("Chat", "")
+            phone = chat_raw.replace("@s.whatsapp.net", "").replace("@c.us", "").replace("@g.us", "")
+            if not phone or "@" in phone:
+                # Last resort: try from field
+                from_raw = payload.get("from", "")
+                phone = from_raw.replace("@c.us", "").replace("@s.whatsapp.net", "")
+                if "@" in phone:
+                    phone = ""
+
+    # Extract type - GOWS may not send type, detect from payload
     msg_type = payload.get("type", "")
     body = payload.get("body", "")
+    has_media = payload.get("hasMedia", False)
+
+    if not msg_type:
+        if has_media or payload.get("media"):
+            msg_type = "image"
+        elif body:
+            msg_type = "chat"
 
     logger.info(f"Incoming: type={msg_type}, from={phone}, body={body[:50]}")
+
+    if not phone:
+        logger.warning(f"Could not extract phone from payload")
+        return
 
     try:
         if msg_type in ("text", "chat"):
@@ -433,6 +474,8 @@ async def handle_incoming_message(payload: dict):
 
         elif msg_type == "image":
             media_url = payload.get("mediaUrl", "")
+            if not media_url:
+                media_url = payload.get("media", "")
             if not media_url:
                 media_url = payload.get("_data", {}).get("mediaData", {}).get("mediaUrl", "")
 

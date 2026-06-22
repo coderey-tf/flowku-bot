@@ -61,13 +61,13 @@ def parse_amount(text: str) -> int:
     text = re.sub(r"rp\.?\s*", "", text)
 
     # Handle "rb" / "k" suffix
-    match = re.match(r"([\d.,]+)\s*(rb|k|ribu)", text)
+    match = re.match(r"([\d.,]+)\s*(rb|k|ribu)(?:\s|$)", text)
     if match:
         num = match.group(1).replace(",", "").replace(".", "")
         return int(num) * 1000
 
     # Handle "jt" / "juta" suffix
-    match = re.match(r"([\d.,]+)\s*(jt|juta|m)", text)
+    match = re.match(r"([\d.,]+)\s*(jt|juta)(?:\s|$)", text)
     if match:
         num = match.group(1).replace(",", "").replace(".", "")
         return int(num) * 1000000

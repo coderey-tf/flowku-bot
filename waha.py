@@ -16,7 +16,7 @@ HEADERS = {
 async def send_text(phone: str, text: str) -> bool:
     """Kirim pesan teks ke nomor WhatsApp."""
     # Normalize phone (hapus +, spasi, strip)
-    phone = phone.replace("+", "").replace(" ", "").replace("-", "")
+    phone = phone.replace("+", "").replace(" ", "").replace("-", "").split(":")[0]  # strip device suffix
 
     # Pastikan format 62xxx
     if phone.startswith("0"):
@@ -41,13 +41,13 @@ async def send_text(phone: str, text: str) -> bool:
                 logger.error(f"Failed to send to {phone}: {resp.status_code} {resp.text}")
                 return False
     except Exception as e:
-        logger.error(f"Error sending message to {phone}: {e}")
+        logger.error(f"Error sending message to {phone}: {e}", exc_info=True)
         return False
 
 
 async def send_image(phone: str, image_url: str, caption: str = "") -> bool:
     """Kirim gambar ke nomor WhatsApp."""
-    phone = phone.replace("+", "").replace(" ", "").replace("-", "")
+    phone = phone.replace("+", "").replace(" ", "").replace("-", "").split(":")[0]  # strip device suffix
     if phone.startswith("0"):
         phone = "62" + phone[1:]
     elif not phone.startswith("62"):
