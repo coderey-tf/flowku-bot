@@ -62,19 +62,18 @@ def parse_amount(text: str) -> int:
     """Parse jumlah uang dari text.
     Mendukung: 50000, 50rb, 50k, 50ribu, 3jt, 2.5jt, 1,5juta, 50.000, rp50000, rp 50.000.
     """
-    import re as _re
     text = text.lower().strip()
-    text = _re.sub(r"rp\.?\s*", "", text)
+    text = re.sub(r"rp\.?\s*", "", text)
 
     def _parse_num(raw: str) -> float:
         """Convert string angka jadi float, support titik/koma sebagai desimal ATAU ribuan."""
         raw = raw.strip()
         # Jika ada titik/koma dengan tepat 1-2 digit di belakangnya → desimal
         # Contoh: "1.5", "2,5", "1.50"
-        if _re.search(r"[.,]\d{1,2}$", raw):
+        if re.search(r"[.,]\d{1,2}$", raw):
             normalized = raw.replace(",", ".")  # ganti koma desimal ke titik
             # Hapus titik ribuan yang ada (titik yang diikuti 3 digit lalu sesuatu lagi)
-            normalized = _re.sub(r"\.(\d{3})(?=[\d.])", r"\1", normalized)
+            normalized = re.sub(r"\.(\d{3})(?=[\d.])", r"\1", normalized)
             try:
                 return float(normalized)
             except ValueError:
@@ -87,18 +86,18 @@ def parse_amount(text: str) -> int:
             return 0.0
 
     # Handle "rb" / "k" / "ribu" suffix → × 1.000
-    match = _re.match(r"([\d.,]+)\s*(rb|k|ribu)(?:\s|$)", text)
+    match = re.match(r"([\d.,]+)\s*(rb|k|ribu)(?:\s|$)", text)
     if match:
         return int(_parse_num(match.group(1)) * 1_000)
 
     # Handle "jt" / "juta" suffix → × 1.000.000 (support desimal: 1.5jt, 2,5juta)
-    match = _re.match(r"([\d.,]+)\s*(jt|juta)(?:\s|$)", text)
+    match = re.match(r"([\d.,]+)\s*(jt|juta)(?:\s|$)", text)
     if match:
         return int(_parse_num(match.group(1)) * 1_000_000)
 
     # Plain number (titik/koma sebagai separator ribuan)
     cleaned = text.replace(".", "").replace(",", "")
-    match = _re.match(r"(\d+)", cleaned)
+    match = re.match(r"(\d+)", cleaned)
     if match:
         return int(match.group(1))
 
@@ -148,13 +147,12 @@ def parse_catatan(message: str, custom_categories: list = None) -> dict | None:
     # Hapus command keywords:
     # - Keyword umum: hapus di mana saja sebagai kata utuh
     # - "masuk": hanya hapus di awal kalimat (tidak boleh menghapus "transfer masuk")
-    import re as _re
     msg_clean = msg
     for word in ["catat", "catatan", "pengeluaran", "pemasukan", "keluar",
                  "income", "expense", "uang"]:
-        msg_clean = _re.sub(rf"\b{word}\b", "", msg_clean)
+      msg_clean = re.sub(rf"\b{word}\b", "", msg_clean)
     # "masuk" hanya strip di awal kalimat
-    msg_clean = _re.sub(r"^\s*masuk\b", "", msg_clean)
+    msg_clean = re.sub(r"^\s*masuk\b", "", msg_clean)
     msg_clean = msg_clean.strip()
 
     # Extract amount — coba 4 pola:
@@ -247,10 +245,13 @@ def parse_ocr_items(text: str, custom_categories: list = None) -> list:
 
 
 def format_rupiah(amount: int) -> str:
-    """Format angka jadi Rupiah."""
+    """Format angka jadi Rupiah (support negatif)."""
+    sign = "-" if amount < 0 else ""
+    amount = abs(amount)
     if amount >= 1000000:
-        return f"Rp{amount/1000000:,.1f}jt".replace(",", ".")
+        val = f"Rp{amount/1000000:,.1f}jt".replace(",", ".")
     elif amount >= 1000:
-        return f"Rp{amount:,.0f}".replace(",", ".")
+        val = f"Rp{amount:,.0f}".replace(",", ".")
     else:
-        return f"Rp{amount}"
+        val = f"Rp{amount}"
+    return f"{sign}{val}"

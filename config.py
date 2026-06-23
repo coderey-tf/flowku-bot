@@ -6,8 +6,11 @@ load_dotenv()
 
 # WAHA
 WAHA_BASE_URL = os.getenv("WAHA_BASE_URL", "http://127.0.0.1:3000")
-WAHA_API_KEY = os.getenv("WAHA_API_KEY", "d454e5177a8849889c205a891429e4bc")
+WAHA_API_KEY = os.getenv("WAHA_API_KEY", "")
 WAHA_SESSION = os.getenv("WAHA_SESSION", "default")
+
+if not WAHA_API_KEY and os.getenv("TESTING") != "true":
+    raise ValueError("WAHA_API_KEY environment variable is not set!")
 
 # Firestore
 FIRESTORE_PROJECT_ID = os.getenv("FIRESTORE_PROJECT_ID", "flowku-95fb4")
@@ -23,9 +26,3 @@ REMINDER_HOUR_2 = 20  # WIB
 
 # Owner phone (for receiving reminders)
 OWNER_PHONE = os.getenv("OWNER_PHONE", "")  # e.g. "6281234567890"
-
-# Categories
-CATEGORIES = [
-    "makan", "minum", "transport", "belanja", "hiburan",
-    "tagihan", "kesehatan", "pendidikan", "lainnya"
-]

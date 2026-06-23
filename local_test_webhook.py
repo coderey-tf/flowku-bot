@@ -23,7 +23,11 @@ def test_webhook():
     
     print(f"Mengirim mock payload ke {url}...")
     try:
-        resp = httpx.post(url, json=payload, headers={"Content-Type": "application/json"})
+        headers = {
+            "Content-Type": "application/json",
+            "x-webhook-secret": "flowku-waha-webhook-2026"
+        }
+        resp = httpx.post(url, json=payload, headers=headers)
         print(f"Response Status: {resp.status_code}")
         print(f"Response Body: {resp.text}")
     except Exception as e:

@@ -7,10 +7,18 @@ import logging
 import json
 import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Header
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime
 import pytz
+
+CATEGORY_EMOJIS = {
+    "food": "🍔", "transport": "🚗", "shopping": "🛍️", "health": "💊",
+    "entertainment": "🎮", "bills": "⚡", "education": "📚", "beauty": "💄",
+    "home": "🏠", "investment": "📈", "social": "🎁", "saving": "🎯",
+    "other_expense": "📦", "salary": "💰", "freelance": "💻", "business": "🏪",
+    "investment_in": "📈", "bonus": "🎉", "transfer": "💸", "other_income": "✨"
+}
 
 from config import APP_PORT, WEBHOOK_SECRET, OWNER_PHONE, REMINDER_HOUR_1, REMINDER_HOUR_2
 from parser import parse_catatan, parse_ocr_items, format_rupiah
@@ -68,7 +76,7 @@ app = FastAPI(title="Flowku Chatbot", lifespan=lifespan)
 # HELPERS
 # ─────────────────────────────────────────────
 
-def format_catatan_msg(saved: dict, catatan: dict, phone: str) -> str:
+def format_catatan_msg(saved: dict, catatan: dict, phone: str, uid: str = None) -> str:
     """Format pesan konfirmasi setelah catat."""
     emoji = "💸" if catatan["type"] == "expense" else "💰"
     tipe_label = "Pengeluaran" if catatan["type"] == "expense" else "Pemasukan"
@@ -82,7 +90,7 @@ def format_catatan_msg(saved: dict, catatan: dict, phone: str) -> str:
         msg += f"📝 {catatan['description']}\n"
 
     # Ringkasan hari ini
-    total = hitung_total_hari_ini(phone)
+    total = hitung_total_hari_ini(phone, uid=uid)
     msg += (
         f"\n📊 Hari ini:\n"
         f"  💸 Keluar: {format_rupiah(total['pengeluaran'])}\n"
@@ -126,7 +134,7 @@ def format_laporan(catatan: list, total_pengeluaran: int, total_pemasukan: int, 
     if by_cat:
         msg += "Pengeluaran per kategori:\n"
         for cat, jumlah in sorted(by_cat.items(), key=lambda x: -x[1]):
-            emoji = emojis.get(cat, "•")
+            emoji = CATEGORY_EMOJIS.get(cat, "•")
             msg += f"  {emoji} {cat.replace('_', ' ').capitalize()}: {format_rupiah(jumlah)}\n"
 
     msg += f"\n💸 Total Keluar: {format_rupiah(total_pengeluaran)}"
@@ -237,15 +245,9 @@ async def cmd_anggaran(phone: str) -> str:
         return "Belum ada anggaran yang diset. Set di aplikasi Flowku dulu ya."
 
     msg = "📊 Status Anggaran Bulan Ini\n\n"
-    emojis = {
-        "food": "🍔", "transport": "🚗", "shopping": "🛍️", "health": "💊",
-        "entertainment": "🎮", "bills": "⚡", "education": "📚", "beauty": "💄",
-        "home": "🏠", "investment": "📈", "social": "🎁", "saving": "🎯",
-        "other_expense": "📦",
-    }
 
     for cat, info in budget.items():
-        emoji = emojis.get(cat, "•")
+        emoji = CATEGORY_EMOJIS.get(cat, "•")
         pct = info["percentage"]
         status = "✅" if pct < 80 else "⚠️" if pct < 100 else "🚨"
         msg += (
@@ -306,7 +308,8 @@ async def handle_text_message(phone: str, text: str) -> str:
             )
             save_pending_transaction(phone, None)
             if saved:
-                return format_catatan_msg(saved, pending, phone)
+                uid = user.get("uid")
+                return format_catatan_msg(saved, pending, phone, uid=uid)
             else:
                 return "❌ Gagal menyimpan transaksi. Silakan hubungi admin."
         elif msg in ("batal", "b", "tidak", "no", "cancel", "t"):
@@ -362,7 +365,8 @@ async def handle_text_message(phone: str, text: str) -> str:
             keterangan=catatan.get("description", ""),
         )
         if saved:
-            return format_catatan_msg(saved, catatan, phone)
+            uid = user.get("uid")
+            return format_catatan_msg(saved, catatan, phone, uid=uid)
         else:
             return "❌ Gagal menyimpan transaksi. Silakan hubungi admin."
 
@@ -454,6 +458,11 @@ async def handle_image_message(phone: str, media_url: str) -> str:
 @app.post("/webhook")
 async def webhook(request: Request):
     """Terima webhook dari WAHA."""
+    # Validasi webhook secret header
+    secret = request.headers.get("x-webhook-secret")
+    if secret != WEBHOOK_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid webhook secret token")
+
     try:
         body = await request.json()
     except Exception:
@@ -583,13 +592,17 @@ async def health():
 
 
 @app.post("/test/send")
-async def test_send(phone: str, text: str):
+async def test_send(phone: str, text: str, x_webhook_secret: str = Header(None)):
+    if x_webhook_secret != WEBHOOK_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid secret token")
     result = await send_text(phone, text)
     return {"sent": result, "to": phone}
 
 
 @app.post("/test/reminder")
-async def test_reminder():
+async def test_reminder(x_webhook_secret: str = Header(None)):
+    if x_webhook_secret != WEBHOOK_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid secret token")
     await cek_dan_kirim_reminder()
     return {"status": "reminder sent"}
 

@@ -19,12 +19,18 @@ logger = logging.getLogger(__name__)
 WIB = pytz.timezone("Asia/Jakarta")
 
 
+_db = None
+
+
 def get_db():
-    """Get Firestore client with service account."""
-    return firestore.Client.from_service_account_json(
-        GOOGLE_APPLICATION_CREDENTIALS,
-        project=FIRESTORE_PROJECT_ID,
-    )
+    """Get Firestore client with service account cached as singleton."""
+    global _db
+    if _db is None:
+        _db = firestore.Client.from_service_account_json(
+            GOOGLE_APPLICATION_CREDENTIALS,
+            project=FIRESTORE_PROJECT_ID,
+        )
+    return _db
 
 
 def get_user_by_phone(phone: str) -> dict | None:
@@ -48,7 +54,10 @@ def verify_whatsapp(phone: str) -> bool:
     db = get_db()
     docs = db.collection("users").where("waPhone", "==", phone).limit(1).stream()
     for doc in docs:
-        doc.reference.update({"waVerified": True})
+        doc.reference.update({
+            "waVerified": True,
+            "waVerifiedAt": firestore.SERVER_TIMESTAMP
+        })
         return True
     return False
 
@@ -148,14 +157,15 @@ def catat_transaksi(user_phone: str, tipe: str, jumlah: int, kategori: str,
     }
 
 
-def get_transaksi_hari_ini(user_phone: str) -> list:
+def get_transaksi_hari_ini(user_phone: str, uid: str = None) -> list:
     """Ambil semua transaksi hari ini untuk user."""
-    user = get_user_by_phone(user_phone)
-    if not user:
-        return []
+    if not uid:
+        user = get_user_by_phone(user_phone)
+        if not user:
+            return []
+        uid = user["uid"]
 
     db = get_db()
-    uid = user["uid"]
     today_start = datetime.now(WIB).replace(hour=0, minute=0, second=0, microsecond=0)
 
     docs = (
@@ -187,9 +197,9 @@ def get_transaksi_bulan_ini(user_phone: str) -> list:
     return [doc.to_dict() for doc in docs]
 
 
-def hitung_total_hari_ini(user_phone: str) -> dict:
+def hitung_total_hari_ini(user_phone: str, uid: str = None) -> dict:
     """Hitung total pengeluaran & pemasukan hari ini."""
-    transaksi = get_transaksi_hari_ini(user_phone)
+    transaksi = get_transaksi_hari_ini(user_phone, uid=uid)
     pengeluaran = sum(t["amount"] for t in transaksi if t.get("type") == "expense")
     pemasukan = sum(t["amount"] for t in transaksi if t.get("type") == "income")
     return {"pengeluaran": pengeluaran, "pemasukan": pemasukan, "catatan": transaksi}

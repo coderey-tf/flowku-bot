@@ -5,6 +5,8 @@ Import langsung handle_text_message dari main, mock semua dependensi
 eksternal (Firestore, WAHA, OCR, Reminder) via sys.modules SEBELUM import.
 Tidak butuh server, tidak butuh Firestore, tidak butuh internet.
 """
+import os
+os.environ["TESTING"] = "true"
 import asyncio
 import sys
 import io

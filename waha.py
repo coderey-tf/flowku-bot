@@ -13,16 +13,19 @@ HEADERS = {
 }
 
 
-async def send_text(phone: str, text: str) -> bool:
-    """Kirim pesan teks ke nomor WhatsApp."""
-    # Normalize phone (hapus +, spasi, strip)
+def normalize_phone(phone: str) -> str:
+    """Normalize phone number to format 62xxx."""
     phone = phone.replace("+", "").replace(" ", "").replace("-", "").split(":")[0]  # strip device suffix
-
-    # Pastikan format 62xxx
     if phone.startswith("0"):
         phone = "62" + phone[1:]
     elif not phone.startswith("62"):
         phone = "62" + phone
+    return phone
+
+
+async def send_text(phone: str, text: str) -> bool:
+    """Kirim pesan teks ke nomor WhatsApp."""
+    phone = normalize_phone(phone)
 
     url = f"{WAHA_BASE_URL}/api/sendText"
     payload = {
@@ -47,11 +50,7 @@ async def send_text(phone: str, text: str) -> bool:
 
 async def send_image(phone: str, image_url: str, caption: str = "") -> bool:
     """Kirim gambar ke nomor WhatsApp."""
-    phone = phone.replace("+", "").replace(" ", "").replace("-", "").split(":")[0]  # strip device suffix
-    if phone.startswith("0"):
-        phone = "62" + phone[1:]
-    elif not phone.startswith("62"):
-        phone = "62" + phone
+    phone = normalize_phone(phone)
 
     url = f"{WAHA_BASE_URL}/api/sendImage"
     payload = {

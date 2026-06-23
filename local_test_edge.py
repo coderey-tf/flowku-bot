@@ -4,6 +4,8 @@ Flowku Bot — Edge Case Test
 Menguji parser dan main handler terhadap input ekstrem atau tidak biasa
 untuk memastikan tidak terjadi error/crash pada aplikasi.
 """
+import os
+os.environ["TESTING"] = "true"
 import sys
 import io
 import unittest.mock as mock

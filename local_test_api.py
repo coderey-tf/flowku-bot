@@ -1,3 +1,5 @@
+import os
+os.environ["TESTING"] = "true"
 import unittest.mock as mock
 import sys
 import io
@@ -56,7 +58,8 @@ def run_tests():
                 "fromMe": False
             }
         }
-        return client.post("/webhook", json=payload)
+        headers = {"x-webhook-secret": "flowku-waha-webhook-2026"}
+        return client.post("/webhook", json=payload, headers=headers)
 
     # Mock database queries dan WAHA API
     with mock.patch("main.get_user_by_phone") as mock_get_user, \
