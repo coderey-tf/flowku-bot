@@ -53,6 +53,18 @@ def verify_whatsapp(phone: str) -> bool:
     return False
 
 
+def save_pending_transaction(phone: str, pending_tx: dict | None) -> bool:
+    """
+    Simpan transaksi pending ke profil user, atau hapus jika None.
+    """
+    db = get_db()
+    docs = db.collection("users").where("waPhone", "==", phone).limit(1).stream()
+    for doc in docs:
+        doc.reference.update({"pendingTransaction": pending_tx})
+        return True
+    return False
+
+
 def get_couple(uid: str) -> dict | None:
     """
     Ambil data couple berdasarkan uid.
@@ -262,3 +274,20 @@ def save_ocr_result(user_phone: str, raw_text: str, parsed_items: list):
         "created_at": datetime.now(WIB).isoformat(),
     }
     db.collection("ocr_results").add(doc)
+
+
+def get_verified_users_for_reminder() -> list:
+    """
+    Ambil semua user yang terverifikasi waVerified = True
+    dan waReminderEnabled = True (atau default True jika field tidak ada).
+    """
+    db = get_db()
+    users_ref = db.collection("users").where("waVerified", "==", True).stream()
+    users = []
+    for doc in users_ref:
+        data = doc.to_dict()
+        data["uid"] = doc.id
+        # Hanya kirim jika waReminderEnabled tidak diset False
+        if data.get("waReminderEnabled", True):
+            users.append(data)
+    return users

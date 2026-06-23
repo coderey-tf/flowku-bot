@@ -1,6 +1,8 @@
-# Walkthrough — WhatsApp Bot Category Alignment & Verification Flow
+# Walkthrough — WhatsApp Bot Category Alignment, Verification, Confirmation Flow & Reminder Toggle
 
-Saya telah berhasil mengimplementasikan perubahan yang direncanakan untuk menyelaraskan kategori transaksi *bot* WhatsApp dengan aplikasi utama Flowku, mendukung kategori kustom dari Firestore, dan menambahkan alur verifikasi nomor WhatsApp pengguna.
+Saya telah berhasil mengimplementasikan seluruh rencana perubahan untuk menyelaraskan kategori transaksi *bot* WhatsApp dengan aplikasi utama Flowku, mendukung kategori kustom dari Firestore, mengintegrasikan alur verifikasi nomor WhatsApp pengguna, menambahkan alur konfirmasi transaksi rancu (ambigu), serta menambahkan fitur switch/toggle untuk mengaktifkan/menonaktifkan pengingat WhatsApp.
+
+---
 
 ## Perubahan yang Dilakukan
 
@@ -16,41 +18,63 @@ File: [parser.py](file:///d:/Project%20Website/flowku/bot/parser.py)
 
 ### 2. Firestore Database Helper
 File: [firestore_db.py](file:///d:/Project%20Website/flowku/bot/firestore_db.py)
-- Menambahkan fungsi `verify_whatsapp(phone)` untuk mengubah status `waVerified` menjadi `True` pada *document user* di Firestore ketika pengguna mengirim pesan verifikasi.
+- **Verifikasi Nomor (`verify_whatsapp`)**: Mengubah status `waVerified` menjadi `True` pada *document user* di Firestore ketika pengguna mengirim pesan verifikasi.
+- **Transaksi Pending (`save_pending_transaction`)**: Menyimpan data transaksi sementara ke field `pendingTransaction` pada dokumen pengguna untuk alur konfirmasi transaksi yang rancu/kurang jelas.
+- **Reminder Multi-User (`get_verified_users_for_reminder`)**: Mengambil profil semua pengguna terverifikasi yang mengaktifkan pengingat (`waReminderEnabled` bernilai `True` atau tidak diset `False`).
 
-### 3. Bot Main (Handler & Verifikasi)
-File: [main.py](file:///d:/Project%20Website/flowku/bot/main.py)
-- **Fitur Verifikasi Otomatis**:
-  - Cek keberadaan user berdasar nomor WA. Jika belum terdaftar, bot menolak akses.
-  - Jika pesan yang masuk adalah `"mulai flowku"`, status `waVerified` di Firestore diubah menjadi `True`, lalu dikirim pesan konfirmasi selamat datang.
-  - Jika belum terverifikasi (`waVerified = False`), bot menolak perintah pencatatan/laporan dan menginstruksikan pengguna untuk melakukan verifikasi terlebih dahulu.
-- **Penanganan Kategori Kustom**: Meneruskan array `customCategories` milik user dari Firestore ke parser.
-- **Privasi Pengguna**: Memperbaiki rujukan `OWNER_PHONE` menjadi `phone` (nomor pengirim pesan) pada perintah laporan (`cmd_hari_ini`, `cmd_bulan_ini`, `cmd_anggaran`, `format_catatan_msg`) sehingga data keuangan tidak bocor antar pengguna.
-- **Perbaikan Fallback Kategori**: Mengubah default fallback kategori dari `"other"` menjadi `"other_expense"` dalam pembentukan ringkasan laporan.
+### 3. Bot Main & Scheduler (Handler & Alur Konfirmasi & Reminder)
+Files: [main.py](file:///d:/Project%20Website/flowku/bot/main.py), [reminder.py](file:///d:/Project%20Website/flowku/bot/reminder.py)
+- **Alur Konfirmasi Transaksi Rancu**:
+  - Transaksi dideteksi sebagai "rancu" jika kategorinya adalah fallback (`other_expense`/`other_income`) atau jika keterangannya kosong.
+  - Jika rancu, bot tidak langsung menyimpannya tetapi menyimpan data tersebut di state pending (`pendingTransaction` di Firestore) dan mengirim pertanyaan konfirmasi interaktif.
+  - Jika pengguna membalas dengan kata kunci **Ya** (`ya`, `y`, `ok`, `oke`, `yes`, `simpan`), transaksi disimpan permanen ke Firestore.
+  - Jika pengguna membalas dengan kata kunci **Batal** (`batal`, `b`, `tidak`, `no`, `cancel`), transaksi pending dihapus dan pencatatan dibatalkan.
+  - Jika pengguna mengirim pesan/instruksi baru lainnya, transaksi pending lama dibatalkan secara otomatis dan pesan baru diproses secara normal.
+- **Reminder Multi-User & Selektif**:
+  - Mengubah fungsi `cek_dan_kirim_reminder` di `reminder.py` agar melakukan perulangan (*looping*) untuk semua pengguna terverifikasi di Firestore.
+  - Memeriksa preferensi `waReminderEnabled` milik masing-masing pengguna. Jika diset `False` oleh pengguna lewat aplikasi, maka pengiriman pengingat harian WhatsApp akan dilewati untuk nomor tersebut.
 
-### 4. App Frontend
-Files: [ProfilePage.jsx](file:///d:/Project%20Website/flowku/app/src/pages/ProfilePage.jsx), [.env.local](file:///d:/Project%20Website/flowku/app/.env.local), [.env.example](file:///d:/Project%20Website/flowku/app/.env.example)
-- Mengubah badge WhatsApp Bot dari `SEGERA HADIR` menjadi status aktif dinamis (`AKTIF` / `BELUM AKTIF`).
-- Menambahkan tombol **Verifikasi WhatsApp** (berwarna hijau khas WhatsApp `#25D166`) yang mengarahkan ke link `wa.me/<nomor-bot>?text=Mulai+Flowku` apabila nomor WA telah disimpan di profil namun belum diverifikasi.
-- Menambahkan konfigurasi `VITE_WA_BOT_NUMBER` di file environment agar nomor bot mudah dikonfigurasi.
+### 4. App Frontend (Profile Page & Toggle Pengingat)
+Files: [ProfilePage.jsx](file:///d:/Project%20Website/flowku/app/src/pages/ProfilePage.jsx)
+- **UI Toggle Switch**: Menambahkan kontrol visual switch toggle berwarna hijau untuk **Pengingat Pencatatan** tepat di bawah input nomor WhatsApp.
+- **Sync State dengan Firestore**:
+  - Menggunakan Hook `useEffect` untuk menyinkronkan status switch dengan data `waReminderEnabled` dari Firestore.
+  - Saat switch digeser, memicu `handleToggleReminder` yang langsung memanggil `updateDoc` ke Firestore untuk mengubah `waReminderEnabled` (disertai pembaruan `updatedAt` dan notifikasi toast sukses).
+- **Verifikasi Input Nomor**: Menambahkan pembersihan format otomatis `formatPhone` saat pengguna memasukkan nomor WhatsApp agar seragam menggunakan kode negara `628xxx` dan membatasi input minimal 11 karakter.
 
 ---
 
-## Rencana Pengujian Manual
+## Hasil Pengujian Otomatis (Automated Testing Results)
 
-1. **Uji Coba Pengguna Baru / Belum Terdaftar**:
-   - Kirim pesan apa saja dari nomor WhatsApp baru ke bot.
-   - **Hasil Yang Diharapkan**: Bot merespons bahwa nomor belum terdaftar dan instruksi pendaftaran di aplikasi.
+Semua pengujian dirancang berjalan secara lokal tanpa memerlukan Firestore/WAHA asli menggunakan *mocking*. Pengujian telah sukses dijalankan dengan hasil kelulusan **100%**:
+
+1. **Parser & Nominal Unit Test** ([local_test_nominal.py](file:///d:/Project%20Website/flowku/bot/local_test_nominal.py))
+   - Menguji 22 variasi format nominal dan 12 jenis kalimat transaksi.
+   - **Hasil**: 34/34 Lulus (100% OK).
+
+2. **Integration / User Journey Test** ([local_test_behavior.py](file:///d:/Project%20Website/flowku/bot/local_test_behavior.py))
+   - Menguji alur lengkap user (belum terdaftar, verifikasi via WA, pencatatan transaksi default/kustom, cek laporan/budget, dan **alur konfirmasi transaksi rancu**).
+   - **Hasil**: 24/24 Skenario Lulus + 5 Skenario Konfirmasi Lulus (100% OK).
+
+3. **FastAPI Webhook Test** ([local_test_api.py](file:///d:/Project%20Website/flowku/bot/local_test_api.py))
+   - Memvalidasi endpoint `/webhook` dan payload dari WAHA (ditambahkan pengaturan UTF-8 agar console Windows tidak error).
+   - **Hasil**: 5/5 API Scenario Lulus (100% OK).
+
+4. **Edge Case Test** ([local_test_edge.py](file:///d:/Project%20Website/flowku/bot/local_test_edge.py))
+   - Menguji kasus batas (deskripsi kosong, spasi saja, nominal Rp1 Miliar, simbol aneh, custom category kosong, tabrakan kata kunci jenis transaksi kustom, serta **mengirim konfirmasi 'ya' tanpa ada transaksi pending**).
+   - **Hasil**: 11 parser edge cases, 3 category edge cases, dan 3 handler edge cases Lulus (100% OK).
+
+---
+
+## Rencana Pengujian Manual (Staging/Production)
+
+1. **Uji Coba Pengaturan Pengingat (Reminder Toggle)**:
+   - Di halaman Profil, klik switch/toggle **Pengingat Pencatatan** ke posisi OFF -> Verifikasi field `waReminderEnabled` di Firestore berubah menjadi `false`.
+   - Klik toggle ke posisi ON -> Verifikasi field `waReminderEnabled` di Firestore berubah menjadi `true`.
 
 2. **Uji Coba Verifikasi Bot**:
-   - Masuk ke aplikasi utama Flowku -> Masuk ke Halaman Profil -> Masukkan Nomor WA -> Simpan.
-   - Klik tombol **Verifikasi WhatsApp** yang muncul.
-   - Kirim pesan `"Mulai Flowku"` ke bot.
-   - **Hasil Yang Diharapkan**: Bot memverifikasi nomor, status di aplikasi berubah menjadi `AKTIF`/`Terverifikasi`, dan bot siap digunakan.
+   - Kirim pesan `"Mulai Flowku"` ke bot -> Bot memverifikasi nomor.
 
-3. **Uji Coba Pencatatan Transaksi**:
-   - Kirim pesan `"catat 50rb makan siang"` -> Masuk ke kategori `food` (Makan & Minum).
-   - Kirim pesan `"pemasukan 500rb gaji"` -> Masuk ke tipe pemasukan kategori `salary` (Gaji).
-   - Kirim pesan `"catat 50rb asdfg"` -> Masuk ke kategori fallback `other_expense`.
-   - Kirim pesan `"catat 100rb beli skincare"` -> Masuk ke kategori baru `beauty` (Kecantikan).
-   - Kirim pesan `"hari ini"` -> Laporan terformat rapi sesuai kategori dengan emoji yang sesuai.
+3. **Uji Coba Transaksi Rancu & Konfirmasi**:
+   - Kirim pesan `"50rb"` (keterangan kosong) -> Bot meminta konfirmasi. Balas `Ya` -> Verifikasi tersimpan.
+   - Kirim pesan `"50.000 asdfg"` (kategori Lainnya) -> Balas `Batal` -> Verifikasi dibatalkan.

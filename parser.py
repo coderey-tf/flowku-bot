@@ -51,30 +51,54 @@ INCOME_CATEGORY_KEYWORDS = {
     "other_income": ["lainnya", "other", "misc", "lain-lain", "pemasukan", "masuk", "income", "pendapatan"],
 }
 
-INCOME_KEYWORDS = ["gaji", "pemasukan", "masuk", "income", "hadiah", "transfer masuk",
-                   "cair", "untung", "bonus", "gajian", "pendapatan", "jualan", "profit"]
+INCOME_KEYWORDS = [
+    "gaji", "pemasukan", "masuk", "income", "hadiah", "transfer masuk",
+    "cair", "untung", "bonus", "gajian", "pendapatan", "jualan", "profit",
+    "freelance", "bisnis", "usaha", "salary", "dividen",
+]
 
 
 def parse_amount(text: str) -> int:
-    """Parse jumlah uang dari text. Mendukung: 50000, 50rb, 50k, 50.000, rp50000, rp 50.000."""
+    """Parse jumlah uang dari text.
+    Mendukung: 50000, 50rb, 50k, 50ribu, 3jt, 2.5jt, 1,5juta, 50.000, rp50000, rp 50.000.
+    """
+    import re as _re
     text = text.lower().strip()
-    text = re.sub(r"rp\.?\s*", "", text)
+    text = _re.sub(r"rp\.?\s*", "", text)
 
-    # Handle "rb" / "k" suffix
-    match = re.match(r"([\d.,]+)\s*(rb|k|ribu)(?:\s|$)", text)
+    def _parse_num(raw: str) -> float:
+        """Convert string angka jadi float, support titik/koma sebagai desimal ATAU ribuan."""
+        raw = raw.strip()
+        # Jika ada titik/koma dengan tepat 1-2 digit di belakangnya → desimal
+        # Contoh: "1.5", "2,5", "1.50"
+        if _re.search(r"[.,]\d{1,2}$", raw):
+            normalized = raw.replace(",", ".")  # ganti koma desimal ke titik
+            # Hapus titik ribuan yang ada (titik yang diikuti 3 digit lalu sesuatu lagi)
+            normalized = _re.sub(r"\.(\d{3})(?=[\d.])", r"\1", normalized)
+            try:
+                return float(normalized)
+            except ValueError:
+                pass
+        # Selainnya: titik/koma sebagai separator ribuan
+        cleaned = raw.replace(".", "").replace(",", "")
+        try:
+            return float(cleaned)
+        except ValueError:
+            return 0.0
+
+    # Handle "rb" / "k" / "ribu" suffix → × 1.000
+    match = _re.match(r"([\d.,]+)\s*(rb|k|ribu)(?:\s|$)", text)
     if match:
-        num = match.group(1).replace(",", "").replace(".", "")
-        return int(num) * 1000
+        return int(_parse_num(match.group(1)) * 1_000)
 
-    # Handle "jt" / "juta" suffix
-    match = re.match(r"([\d.,]+)\s*(jt|juta)(?:\s|$)", text)
+    # Handle "jt" / "juta" suffix → × 1.000.000 (support desimal: 1.5jt, 2,5juta)
+    match = _re.match(r"([\d.,]+)\s*(jt|juta)(?:\s|$)", text)
     if match:
-        num = match.group(1).replace(",", "").replace(".", "")
-        return int(num) * 1000000
+        return int(_parse_num(match.group(1)) * 1_000_000)
 
-    # Plain number (with dots/commas as thousand separators)
+    # Plain number (titik/koma sebagai separator ribuan)
     cleaned = text.replace(".", "").replace(",", "")
-    match = re.match(r"(\d+)", cleaned)
+    match = _re.match(r"(\d+)", cleaned)
     if match:
         return int(match.group(1))
 
@@ -121,30 +145,52 @@ def parse_catatan(message: str, custom_categories: list = None) -> dict | None:
     if any(w in msg for w in INCOME_KEYWORDS):
         tx_type = "income"
 
-    # Remove command keywords
+    # Hapus command keywords:
+    # - Keyword umum: hapus di mana saja sebagai kata utuh
+    # - "masuk": hanya hapus di awal kalimat (tidak boleh menghapus "transfer masuk")
+    import re as _re
     msg_clean = msg
-    for word in ["catat", "catatan", "pengeluaran", "pemasukan", "masuk", "keluar",
+    for word in ["catat", "catatan", "pengeluaran", "pemasukan", "keluar",
                  "income", "expense", "uang"]:
-        msg_clean = msg_clean.replace(word, "")
+        msg_clean = _re.sub(rf"\b{word}\b", "", msg_clean)
+    # "masuk" hanya strip di awal kalimat
+    msg_clean = _re.sub(r"^\s*masuk\b", "", msg_clean)
     msg_clean = msg_clean.strip()
 
+    # Extract amount — coba 4 pola:
     # Extract amount
     amount = 0
     description = ""
 
+    # Suffix token: rb, k, ribu, jt, juta — harus diikuti spasi atau akhir string
+    # (mencegah "k" dari "kopi" atau "jt" dari "jalan" ikut tertangkap)
+    SUFFIX = r"(?:rb|k|ribu|jt|juta)(?=\s|$)"
+
     patterns = [
-        r"(rp\.?\s*[\d.,]+\s*(?:rb|k|ribu|jt|juta|m)?)\s*(.*)",
-        r"([\d.,]+\s*(?:rb|k|ribu|jt|juta|m))\s*(.*)",
-        r"([\d.,]+)\s*(.*)",
+        # 1. RP prefix di depan angka (rp25000, rp 50rb)
+        (rf"(rp\.?\s*[\d.,]+\s*(?:{SUFFIX})?)(\s+.*|$)", "amount_first"),
+        # 2. Angka + suffix wajib di belakang (50rb, 15k, 3jt) — suffix tidak opsional
+        (rf"([\d.,]+\s*{SUFFIX})(.*)", "amount_first"),
+        # 3. Angka saja (plain, tanpa suffix)
+        (r"([\d.,]+)(.*)", "amount_first"),
+        # 4. Deskripsi di depan, angka di belakang (e.g. "tagihan wifi 300rb", "transfer masuk 200rb dari mama")
+        (rf"^(.+?)\s+([\d.,]+\s*(?:{SUFFIX})?)\s*(.*)$", "desc_first"),
     ]
 
-    for pattern in patterns:
+    for pattern, mode in patterns:
         match = re.match(pattern, msg_clean, re.IGNORECASE)
         if match:
-            amount_str = match.group(1).strip()
-            amount = parse_amount(amount_str)
-            description = match.group(2).strip() if match.group(2) else ""
-            break
+            if mode == "desc_first":
+                description = match.group(1).strip()
+                amount = parse_amount(match.group(2).strip())
+                extra = match.group(3).strip()
+                if extra:
+                    description = f"{description} {extra}".strip()
+            else:
+                amount = parse_amount(match.group(1).strip())
+                description = match.group(2).strip() if match.group(2) else ""
+            if amount > 0:
+                break
 
     if amount <= 0:
         return None

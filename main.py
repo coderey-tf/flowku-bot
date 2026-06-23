@@ -17,6 +17,7 @@ from parser import parse_catatan, parse_ocr_items, format_rupiah
 from firestore_db import (
     catat_transaksi, hitung_total_hari_ini, hitung_total_bulan_ini,
     save_ocr_result, get_budget_status, get_user_by_phone, verify_whatsapp,
+    save_pending_transaction,
 )
 from waha import send_text
 from ocr import extract_text_from_image
@@ -143,24 +144,42 @@ def format_laporan(catatan: list, total_pengeluaran: int, total_pemasukan: int, 
 
 async def cmd_help() -> str:
     return (
-        "🤖 *Flowku Bot*\n\n"
-        "Perintah yang tersedia:\n\n"
-        "*Catat Pengeluaran:*\n"
-        "  • catat 25000 makan\n"
-        "  • 50rb transport grab\n"
-        "  • pengeluaran 100000 belanja\n\n"
-        "*Catat Pemasukan:*\n"
-        "  • pemasukan 500000 gaji\n"
-        "  • masuk 200rb jualan\n\n"
-        "*Laporan:*\n"
-        "  • *hari ini* — ringkasan hari ini\n"
-        "  • *bulan ini* — ringkasan bulanan\n\n"
-        "*Foto Struk:*\n"
-        "  Kirim foto struk, otomatis tercatat\n\n"
-        "*Lainnya:*\n"
-        "  • *bantuan* — tampilkan menu ini\n"
-        "  • *kategori* — daftar kategori\n"
-        "  • *anggaran* — cek status anggaran"
+        "💰 *Flowku Bot* — Asisten Keuangan Pribadimu\n\n"
+
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "📝 *CATAT PENGELUARAN*\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "Cukup ketik nominalnya, langsung tercatat!\n"
+        "  • `50rb makan siang`\n"
+        "  • `catat 25000 kopi`\n"
+        "  • `tagihan wifi 300rb`\n"
+        "  • `80rb skincare vitamin c`\n\n"
+
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "💰 *CATAT PEMASUKAN*\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "  • `pemasukan 3jt gaji bulanan`\n"
+        "  • `masuk 500rb bonus`\n"
+        "  • `1jt freelance desain logo`\n\n"
+
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "📊 *LAPORAN & CEK*\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "  • *hari ini* — ringkasan transaksi hari ini\n"
+        "  • *bulan ini* — ringkasan & saldo bulanan\n"
+        "  • *anggaran* — cek sisa budget per kategori\n"
+        "  • *kategori* — lihat semua kategori\n\n"
+
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "📸 *SCAN STRUK*\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "Kirim *foto struk* langsung ke chat ini,\n"
+        "Flowku akan baca & catat otomatis!\n\n"
+
+        "💡 *Tips:*\n"
+        "Nominal bisa pakai: `rb`, `k`, `ribu`, `jt`, `juta`\n"
+        "Contoh: `50rb` = `50k` = `50000`\n"
+        "Ketik *bantuan* kapan saja untuk tampilkan menu ini."
     )
 
 
@@ -274,6 +293,29 @@ async def handle_text_message(phone: str, text: str) -> str:
             "Silakan kirim pesan *Mulai Flowku* (tanpa tanda kutip) ke chat ini untuk mengaktifkan bot."
         )
 
+    # 3b. Check for pending confirmation flow
+    pending = user.get("pendingTransaction")
+    if pending:
+        if msg in ("ya", "y", "ok", "oke", "yes", "simpan"):
+            saved = catat_transaksi(
+                user_phone=phone,
+                tipe=pending["type"],
+                jumlah=pending["amount"],
+                kategori=pending["category"],
+                keterangan=pending.get("description", ""),
+            )
+            save_pending_transaction(phone, None)
+            if saved:
+                return format_catatan_msg(saved, pending, phone)
+            else:
+                return "❌ Gagal menyimpan transaksi. Silakan hubungi admin."
+        elif msg in ("batal", "b", "tidak", "no", "cancel", "t"):
+            save_pending_transaction(phone, None)
+            return "❌ *Pencatatan dibatalkan*\n\nTransaksi Anda tidak disimpan."
+        else:
+            # Auto-cancel pending transaction if a new message/command is received
+            save_pending_transaction(phone, None)
+
     # 4. If verified, continue to standard commands & parsing
     custom_categories = user.get("customCategories", [])
 
@@ -295,6 +337,23 @@ async def handle_text_message(phone: str, text: str) -> str:
     # Try parse as catatan
     catatan = parse_catatan(text, custom_categories=custom_categories)
     if catatan:
+        # Check if transaction is ambiguous ("rancu")
+        is_rancu = catatan["category"] in ("other_expense", "other_income") or not catatan.get("description")
+        
+        if is_rancu:
+            save_pending_transaction(phone, catatan)
+            emoji = "💸" if catatan["type"] == "expense" else "💰"
+            desc_label = catatan.get("description") or "-"
+            return (
+                "🔍 *Transaksi Kurang Detail / Kategori Lainnya*\n\n"
+                "Kami mendeteksi pencatatan Anda kurang detail:\n"
+                f"{emoji} *{format_rupiah(catatan['amount'])}* (Kategori: {catatan['category'].replace('_', ' ').capitalize()})\n"
+                f"📝 Keterangan: {desc_label}\n\n"
+                "Apakah Anda ingin menyimpan transaksi ini?\n"
+                "• Balas *Ya* / *Ok* untuk menyimpan\n"
+                "• Balas *Batal* / *Tidak* untuk membatalkan"
+            )
+            
         saved = catat_transaksi(
             user_phone=phone,
             tipe=catatan["type"],

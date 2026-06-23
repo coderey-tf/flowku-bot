@@ -17,58 +17,62 @@ WIB = pytz.timezone("Asia/Jakarta")
 
 async def cek_dan_kirim_reminder():
     """Cek apakah ada transaksi hari ini, kirim reminder kalau belum."""
-    from firestore_db import hitung_total_hari_ini
+    from firestore_db import get_verified_users_for_reminder, hitung_total_hari_ini
 
     now = datetime.now(WIB)
     jam = now.strftime("%H:%M")
     today = now.strftime("%Y-%m-%d")
 
-    if not OWNER_PHONE:
-        logger.warning("OWNER_PHONE not set, skipping reminder")
-        return
+    users = get_verified_users_for_reminder()
+    logger.info(f"Checking reminders for {len(users)} users...")
 
-    catatan = hitung_total_hari_ini(OWNER_PHONE)
-    jumlah = len(catatan["catatan"])
+    for user in users:
+        phone = user.get("waPhone")
+        if not phone:
+            continue
 
-    if jumlah == 0:
-        if int(now.strftime("%H")) < 15:
-            msg = (
-                f"☀️ Selamat siang!\n\n"
-                f"Kamu belum catat pengeluaran hari ini ({today}).\n\n"
-                f"Ketik contoh:\n"
-                f"• *catat 25000 makan*\n"
-                f"• *50rb transport grab*\n"
-                f"• Atau kirim foto struk\n\n"
-                f"Jangan lupa catat ya! 📝"
-            )
+        catatan = hitung_total_hari_ini(phone)
+        jumlah = len(catatan["catatan"])
+
+        if jumlah == 0:
+            if int(now.strftime("%H")) < 15:
+                msg = (
+                    f"☀️ Selamat siang!\n\n"
+                    f"Kamu belum catat pengeluaran hari ini ({today}).\n\n"
+                    f"Ketik contoh:\n"
+                    f"• *catat 25000 makan*\n"
+                    f"• *50rb transport grab*\n"
+                    f"• Atau kirim foto struk\n\n"
+                    f"Jangan lupa catat ya! 📝"
+                )
+            else:
+                msg = (
+                    f"🌙 Malam!\n\n"
+                    f"Hari ini ({today}) belum ada pencatatan sama sekali.\n\n"
+                    f"Sebelum tidur, coba catat pengeluaran hari ini:\n"
+                    f"• *catat 25000 makan*\n"
+                    f"• *100rb belanja*\n"
+                    f"• *foto struk*\n\n"
+                    f"Catatan kecil = kontrol keuangan besar 💰"
+                )
+
+            await send_text(phone, msg)
+            logger.info(f"Reminder sent to {phone} at {jam}, no records today")
         else:
-            msg = (
-                f"🌙 Malam!\n\n"
-                f"Hari ini ({today}) belum ada pencatatan sama sekali.\n\n"
-                f"Sebelum tidur, coba catat pengeluaran hari ini:\n"
-                f"• *catat 25000 makan*\n"
-                f"• *100rb belanja*\n"
-                f"• *foto struk*\n\n"
-                f"Catatan kecil = kontrol keuangan besar 💰"
-            )
+            if int(now.strftime("%H")) >= 18:
+                p = catatan["pengeluaran"]
+                m = catatan["pemasukan"]
+                msg = (
+                    f"📊 Ringkasan hari ini ({today}):\n\n"
+                    f"📝 {jumlah} transaksi\n"
+                    f"💸 Pengeluaran: _Rp{p:,.0f}_\n".replace(",", ".")
+                )
+                if m > 0:
+                    msg += f"💰 Pemasukan: _Rp{m:,.0f}_\n".replace(",", ".")
+                msg += "\nSelamat istirahat! 😴"
 
-        await send_text(OWNER_PHONE, msg)
-        logger.info(f"Reminder sent at {jam}, no records today")
-    else:
-        if int(now.strftime("%H")) >= 18:
-            p = catatan["pengeluaran"]
-            m = catatan["pemasukan"]
-            msg = (
-                f"📊 Ringkasan hari ini ({today}):\n\n"
-                f"📝 {jumlah} transaksi\n"
-                f"💸 Pengeluaran: _Rp{p:,.0f}_\n".replace(",", ".")
-            )
-            if m > 0:
-                msg += f"💰 Pemasukan: _Rp{m:,.0f}_\n".replace(",", ".")
-            msg += "\nSelamat istirahat! 😴"
-
-            await send_text(OWNER_PHONE, msg)
-            logger.info(f"Summary sent at {jam}, {jumlah} records today")
+                await send_text(phone, msg)
+                logger.info(f"Summary sent to {phone} at {jam}, {jumlah} records today")
 
 
 async def cek_langganan():
