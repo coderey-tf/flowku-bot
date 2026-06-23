@@ -124,13 +124,6 @@ def format_laporan(catatan: list, total_pengeluaran: int, total_pemasukan: int, 
             cat = t.get("category", "other_expense")
             by_cat[cat] = by_cat.get(cat, 0) + t.get("amount", 0)
 
-    emojis = {
-        "food": "🍔", "transport": "🚗", "shopping": "🛍️", "health": "💊",
-        "entertainment": "🎮", "bills": "⚡", "education": "📚", "beauty": "💄",
-        "home": "🏠", "investment": "📈", "social": "🎁", "saving": "🎯",
-        "other_expense": "📦",
-    }
-
     if by_cat:
         msg += "Pengeluaran per kategori:\n"
         for cat, jumlah in sorted(by_cat.items(), key=lambda x: -x[1]):
