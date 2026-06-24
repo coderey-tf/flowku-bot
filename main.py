@@ -259,6 +259,50 @@ async def cmd_anggaran(phone: str) -> str:
 
 
 # ─────────────────────────────────────────────
+# SUSPICIOUS TRANSACTION DETECTOR
+# ─────────────────────────────────────────────
+
+import re as _re
+
+# Suffix-like karakter yang sering jadi typo (bukan rb/k/ribu/jt/juta)
+# Hanya tangkap suffix yang LANGSUNG menempel atau 1 spasi setelah angka,
+# dan suffix tersebut berdiri sendiri (tidak diikuti huruf lain = bukan bagian kata)
+_TYPO_SUFFIX_PATTERN = _re.compile(
+    r"(?<!\w)(\d+)\s{0,1}([a-z]{1,3})(?!\w)",
+    _re.IGNORECASE,
+)
+_VALID_SUFFIXES = {"rb", "k", "ribu", "jt", "juta", "rp"}
+
+
+def is_suspicious_transaction(raw_text: str, catatan: dict) -> tuple[bool, str]:
+    """
+    Deteksi apakah transaksi terlihat mencurigakan / typo.
+    Returns: (is_suspicious: bool, reason: str)
+    """
+    amount = catatan.get("amount", 0)
+    raw_lower = raw_text.strip().lower()
+
+    # 1. Nominal terlalu kecil (< Rp500) — kemungkinan lupa suffix
+    if 0 < amount < 500:
+        return True, f"Nominal {format_rupiah(amount)} sangat kecil, mungkin ada typo? (contoh: '10rb' bukan '10 m')"
+
+    # 2. Nominal sangat besar (> Rp 100.000.000)
+    if amount > 100_000_000:
+        return True, f"Nominal {format_rupiah(amount)} sangat besar, pastikan sudah benar"
+
+    # 3. Ada suffix tidak dikenal langsung setelah angka (kemungkinan typo suffix)
+    # mis. "10 m makan" → suffix 'm' tidak valid
+    # mis. "50rb makan" → suffix 'rb' valid, skip
+    # mis. "10 makan" → 'makan' adalah kata panjang, tidak tertangkap regex ini
+    for match in _TYPO_SUFFIX_PATTERN.finditer(raw_lower):
+        suffix = match.group(2).lower()
+        if suffix not in _VALID_SUFFIXES:
+            return True, f"Suffix '*{suffix}*' tidak dikenal setelah angka {match.group(1)}, mungkin typo? (gunakan: rb, k, jt, juta)"
+
+    return False, ""
+
+
+# ─────────────────────────────────────────────
 # MESSAGE HANDLER
 # ─────────────────────────────────────────────
 
@@ -340,9 +384,25 @@ async def handle_text_message(phone: str, text: str) -> str:
     # Try parse as catatan
     catatan = parse_catatan(text, custom_categories=custom_categories)
     if catatan:
-        # Check if transaction is ambiguous ("rancu")
+        # Check if transaction is ambiguous ("rancu") or suspicious (typo/nyeleneh)
         is_rancu = catatan["category"] in ("other_expense", "other_income") or not catatan.get("description")
-        
+        suspicious, suspicious_reason = is_suspicious_transaction(text, catatan)
+
+        if suspicious:
+            save_pending_transaction(phone, catatan)
+            emoji = "💸" if catatan["type"] == "expense" else "💰"
+            desc_label = catatan.get("description") or "-"
+            return (
+                "⚠️ *Konfirmasi Transaksi*\n\n"
+                f"Ada yang perlu dikonfirmasi: _{suspicious_reason}_\n\n"
+                f"{emoji} *{format_rupiah(catatan['amount'])}*\n"
+                f"📂 Kategori: {catatan['category'].replace('_', ' ').capitalize()}\n"
+                f"📝 Keterangan: {desc_label}\n\n"
+                "Apakah ini benar?\n"
+                "• Balas *Ya* / *Ok* untuk menyimpan\n"
+                "• Balas *Batal* / *Tidak* untuk membatalkan"
+            )
+
         if is_rancu:
             save_pending_transaction(phone, catatan)
             emoji = "💸" if catatan["type"] == "expense" else "💰"
@@ -356,7 +416,7 @@ async def handle_text_message(phone: str, text: str) -> str:
                 "• Balas *Ya* / *Ok* untuk menyimpan\n"
                 "• Balas *Batal* / *Tidak* untuk membatalkan"
             )
-            
+
         saved = catat_transaksi(
             user_phone=phone,
             tipe=catatan["type"],
