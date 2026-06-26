@@ -16,6 +16,9 @@ if not WAHA_API_KEY and os.getenv("TESTING") != "true":
 FIRESTORE_PROJECT_ID = os.getenv("FIRESTORE_PROJECT_ID", "flowku-95fb4")
 GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 
+# Gemini OCR API
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
 # App
 APP_PORT = int(os.getenv("APP_PORT", "8700"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "flowku-waha-webhook-2026")

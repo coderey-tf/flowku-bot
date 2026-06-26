@@ -28,7 +28,7 @@ from firestore_db import (
     save_pending_transaction,
 )
 from waha import send_text
-from ocr import extract_text_from_image
+from ocr import extract_text_from_image, extract_items_from_image
 from reminder import cek_dan_kirim_reminder, cek_langganan
 
 logging.basicConfig(
@@ -75,6 +75,22 @@ app = FastAPI(title="Flowku Chatbot", lifespan=lifespan)
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
+
+def format_ocr_preview(items: list, ocr_label: str = "🤖 AI") -> str:
+    """Format preview OCR items sebelum konfirmasi."""
+    total = sum(item["harga"] for item in items)
+    msg = f"{ocr_label} Struk terbaca! {len(items)} item ditemukan:\n\n"
+    for i, item in enumerate(items, 1):
+        emoji = CATEGORY_EMOJIS.get(item["kategori"], "•")
+        msg += f"  {i}. {emoji} {item['nama']}: {format_rupiah(item['harga'])} ({item['kategori']})\n"
+    msg += f"\n💸 Total: {format_rupiah(total)}\n"
+    msg += f"\n💾 Simpan semua item ke catatan?"
+    msg += f"\n• Balas *Ya* / *Ok* untuk simpan"
+    msg += f"\n• Balas *Batal* untuk batal"
+    msg += f"\n• *hapus 1,3* — hapus item no 1 & 3"
+    msg += f"\n• *edit 1 5000 makan* — ubah item no 1"
+    return msg
+
 
 def format_catatan_msg(saved: dict, catatan: dict, phone: str, uid: str = None) -> str:
     """Format pesan konfirmasi setelah catat."""
@@ -335,7 +351,93 @@ async def handle_text_message(phone: str, text: str) -> str:
     # 3b. Check for pending confirmation flow
     pending = user.get("pendingTransaction")
     if pending:
+        # ── OCR: HAPUS ITEMS ──
+        if pending.get("type") == "ocr_items" and msg.startswith("hapus"):
+            nums_str = msg.replace("hapus", "").strip()
+            try:
+                indices = [int(n.strip()) - 1 for n in nums_str.split(",") if n.strip().isdigit()]
+                items = pending["items"]
+                removed = [items[i] for i in indices if 0 <= i < len(items)]
+                if not removed:
+                    return "❌ Nomor item tidak valid. Contoh: *hapus 1,3*"
+                # Remove items (reverse order to keep indices valid)
+                for i in sorted(indices, reverse=True):
+                    if 0 <= i < len(items):
+                        items.pop(i)
+                if not items:
+                    save_pending_transaction(phone, None)
+                    return "❌ Semua item dihapus. Tidak ada yang tersimpan.\nKirim foto struk baru atau catat manual."
+                # Update pending & show preview
+                pending["items"] = items
+                save_pending_transaction(phone, pending)
+                nama_removed = ", ".join(r["nama"] for r in removed)
+                return f"🗑️ Dihapus: {nama_removed}\n\n" + format_ocr_preview(items)
+            except (ValueError, IndexError):
+                return "❌ Format salah. Contoh: *hapus 1,3*"
+
+        # ── OCR: EDIT ITEM ──
+        if pending.get("type") == "ocr_items" and msg.startswith("edit"):
+            parts = msg.split(None, 3)  # ["edit", "1", "5000", "makan siang"]
+            if len(parts) < 3:
+                return "❌ Format: *edit [no] [harga] [nama]*\nContoh: *edit 1 5000 makan siang*"
+            try:
+                idx = int(parts[1]) - 1
+                items = pending["items"]
+                if idx < 0 or idx >= len(items):
+                    return f"❌ Item no {idx+1} tidak ada. Pilih 1-{len(items)}"
+                new_harga = int(parts[2].replace(".", "").replace(",", ""))
+                new_nama = parts[3].strip() if len(parts) > 3 else items[idx]["nama"]
+                # Detect category from new name
+                from parser import detect_category
+                custom_categories = user.get("customCategories", [])
+                new_kategori = detect_category(new_nama, tx_type="expense", custom_categories=custom_categories)
+                old = items[idx].copy()
+                items[idx] = {"nama": new_nama, "harga": new_harga, "kategori": new_kategori}
+                save_pending_transaction(phone, pending)
+                return (
+                    f"✏️ Item {idx+1} diubah:\n"
+                    f"  ❌ {old['nama']}: {format_rupiah(old['harga'])} ({old['kategori']})\n"
+                    f"  ✅ {new_nama}: {format_rupiah(new_harga)} ({new_kategori})\n\n"
+                    + format_ocr_preview(items)
+                )
+            except (ValueError, IndexError):
+                return "❌ Format: *edit [no] [harga] [nama]*\nContoh: *edit 1 5000 makan siang*"
+
         if msg in ("ya", "y", "ok", "oke", "yes", "simpan"):
+            # ── OCR BATCH ITEMS ──
+            if pending.get("type") == "ocr_items":
+                items = pending["items"]
+                raw_text = pending.get("raw_text", "")
+                total = 0
+                saved_items = []
+                for item in items:
+                    result = catat_transaksi(
+                        user_phone=phone,
+                        tipe="expense",
+                        jumlah=item["harga"],
+                        kategori=item["kategori"],
+                        keterangan=item["nama"],
+                        source="wa_bot_ocr",
+                    )
+                    if result:
+                        total += item["harga"]
+                        saved_items.append(item)
+                save_ocr_result(phone, raw_text, saved_items)
+                save_pending_transaction(phone, None)
+                if saved_items:
+                    uid = user.get("uid")
+                    daily = hitung_total_hari_ini(phone, uid=uid)
+                    msg_out = f"✅ {len(saved_items)} item tersimpan!\n\n"
+                    for item in saved_items:
+                        emoji = CATEGORY_EMOJIS.get(item["kategori"], "•")
+                        msg_out += f"  {emoji} {item['nama']}: {format_rupiah(item['harga'])} ({item['kategori']})\n"
+                    msg_out += f"\n💸 Total: {format_rupiah(total)}"
+                    msg_out += f"\n\n📊 Total hari ini: {format_rupiah(daily['pengeluaran'])}"
+                    return msg_out
+                else:
+                    return "❌ Gagal menyimpan item. Silakan hubungi admin."
+
+            # ── SINGLE TRANSACTION (existing) ──
             saved = catat_transaksi(
                 user_phone=phone,
                 tipe=pending["type"],
@@ -353,7 +455,17 @@ async def handle_text_message(phone: str, text: str) -> str:
             save_pending_transaction(phone, None)
             return "❌ *Pencatatan dibatalkan*\n\nTransaksi Anda tidak disimpan."
         else:
-            # Auto-cancel pending transaction if a new message/command is received
+            # ── OCR pending: JANGAN auto-cancel, minta user pilih ──
+            if pending.get("type") == "ocr_items":
+                return (
+                    "⏳ Masih ada struk yang belum disimpan.\n\n"
+                    "Pilih dulu:\n"
+                    "• *Ya* — simpan semua item\n"
+                    "• *Batal* — buang semua\n"
+                    "• *hapus [no]* — hapus item\n"
+                    "• *edit [no] [harga] [nama]* — ubah item"
+                )
+            # Single transaction: auto-cancel seperti biasa
             save_pending_transaction(phone, None)
 
     # 4. If verified, continue to standard commands & parsing
@@ -431,7 +543,7 @@ async def handle_text_message(phone: str, text: str) -> str:
     )
 
 
-async def handle_image_message(phone: str, media_url: str) -> str:
+async def handle_image_message(phone: str, media_url: str, base64_data: str = None) -> str:
     """Proses gambar (foto struk) via OCR."""
     # 1. Lookup user from Firestore
     user = get_user_by_phone(phone)
@@ -452,56 +564,119 @@ async def handle_image_message(phone: str, media_url: str) -> str:
 
     custom_categories = user.get("customCategories", [])
 
-    if not media_url:
+    if not media_url and not base64_data:
         return "Gagal terima gambar. Coba kirim ulang."
 
-    raw_text = await extract_text_from_image(media_url)
+    # ── CEK: ada struk pending belum disimpan? ──
+    pending = user.get("pendingTransaction")
+    if pending and pending.get("type") == "ocr_items":
+        old_count = len(pending.get("items", []))
+        old_total = sum(i["harga"] for i in pending.get("items", []))
+        from parser import format_rupiah
+        logger.info(f"Replacing pending OCR ({old_count} items, {format_rupiah(old_total)}) with new image")
+        save_pending_transaction(phone, None)
+        replace_warning = f"⚠️ Struk sebelumnya ({old_count} item, {format_rupiah(old_total)}) dibatalkan.\n\n"
+    else:
+        replace_warning = ""
 
-    if not raw_text.strip():
-        return (
-            "Gagal baca struk 😅\n\n"
-            "Tips:\n"
-            "• Foto harus jelas & terang\n"
-            "• Pastikan teks terbaca\n"
-            "• Atau catat manual: *catat 25000 makan*"
-        )
+    # ── PIPELINE: Pre-check (Tesseract) → Gemini structured OCR ──
+    result = await extract_items_from_image(media_url, base64_data=base64_data)
 
-    items = parse_ocr_items(raw_text, custom_categories=custom_categories)
+    # Pre-check gagal → bukan struk
+    if not result["is_receipt"]:
+        reason = result["reason"]
+        error_messages = {
+            "GAMBAR_TIDAK_ADA_TEKS": (
+                "❌ Foto ini sepertinya bukan struk/nota.\n\n"
+                "Tidak terdeteksi teks pada gambar. Kemungkinan:\n"
+                "• Foto gelap atau buram\n"
+                "• Foto bukan struk (misal: selfie, pemandangan, screenshot chat)\n\n"
+                "📋 *Kirim foto struk/nota yang valid:*\n"
+                "• Struk belanja (Alfamart, Indomaret, supermarket)\n"
+                "• Nota makan di restoran/warung\n"
+                "• Struk SPBU (bensin)\n"
+                "• Bukti transfer/QRIS\n"
+                "• Invoice belanja online\n\n"
+                "💡 *Tips foto yang bagus:*\n"
+                "• Pastikan cahaya cukup terang\n"
+                "• Foto dari atas, tegak lurus\n"
+                "• Semua teks harus terbaca jelas"
+            ),
+            "BUKAN_STRUK": (
+                "❌ Gambar ini bukan struk atau nota belanja.\n\n"
+                "Flowku hanya bisa membaca foto struk/nota/bukti transaksi.\n\n"
+                "📋 *Yang bisa dibaca:*\n"
+                "• Struk minimarket (Alfamart, Indomaret, Circle K)\n"
+                "• Nota restoran/warung/kafe\n"
+                "• Struk SPBU (Pertamina, Shell, BP)\n"
+                "• Bukti pembayaran QRIS/transfer\n"
+                "• Invoice e-commerce (Shopee, Tokopedia, dll)\n\n"
+                "Ketik *catat 25000 makan* untuk input manual."
+            ),
+            "GAMBAR_TIDAK_JELAS": (
+                "❌ Foto kurang jelas, tidak bisa dibaca.\n\n"
+                "💡 *Coba lagi dengan:*\n"
+                "• Foto dari atas (bird's eye view)\n"
+                "• Pastikan cahaya terang dan tidak ada bayangan\n"
+                "• Jangan goyang saat foto\n"
+                "• Semua tulisan harus terbaca\n\n"
+                "Atau ketik *catat 25000 makan* untuk input manual."
+            ),
+        }
+        msg = error_messages.get(reason, error_messages["GAMBAR_TIDAK_JELAS"])
+        return msg
+
+    items = result["items"]
+    raw_text = ""
+    gemini_tried = False
+
+    if items:
+        logger.info(f"Gemini structured OCR: {len(items)} items directly")
+        gemini_tried = True
+    else:
+        # Gemini return None/empty → kemungkinan bukan struk
+        gemini_tried = True
+        # Fallback: Tesseract text + regex parsing
+        raw_text = result.get("reason", "")
+        if raw_text:
+            logger.info(f"Tesseract fallback: {len(raw_text)} chars")
+            items = parse_ocr_items(raw_text, custom_categories=custom_categories)
 
     if not items:
+        # Kalau Gemini sudah coba dan return kosong → bukan struk
+        if gemini_tried and not raw_text:
+            return (
+                "❌ Foto ini bukan struk atau nota belanja.\n\n"
+                "Tidak ditemukan item belanja pada gambar.\n\n"
+                "📋 *Kirim foto yang valid:*\n"
+                "• Struk minimarket (Alfamart, Indomaret)\n"
+                "• Nota restoran/warung\n"
+                "• Struk SPBU (bensin)\n"
+                "• Bukti pembayaran QRIS\n\n"
+                "Atau ketik *catat 25000 makan* untuk input manual."
+            )
         return (
-            f"Struk terbaca tapi ga ketemu item yang jelas 😅\n\n"
-            f"Teks: {raw_text[:200]}...\n\n"
-            f"Coba catat manual: *catat 25000 makan*"
+            "❌ Struk terbaca tapi tidak ditemukan item yang jelas.\n\n"
+            "Kemungkinan:\n"
+            "• Struk kosong atau tidak lengkap\n"
+            "• Format struk tidak umum\n"
+            "• Foto terpotong atau terlalu buram\n\n"
+            "📋 *Coba:*\n"
+            "• Foto ulang dengan lebih jelas\n"
+            "• Atau ketik manual: *catat 25000 makan siang*"
         )
 
-    # Save all items
-    total = 0
-    saved_items = []
-    for item in items:
-        result = catat_transaksi(
-            user_phone=phone,
-            tipe="expense",
-            jumlah=item["harga"],
-            kategori=item["kategori"],
-            keterangan=item["nama"],
-            source="wa_bot_ocr",
-        )
-        if result:
-            total += item["harga"]
-            saved_items.append(item)
+    # ── KONFIRMASI DULU SEBELUM SIMPAN ──
+    ocr_label = "🤖 AI" if not raw_text else "📸"
 
-    save_ocr_result(phone, raw_text, saved_items)
+    # Simpan ke pending (belum simpan ke transaksi)
+    save_pending_transaction(phone, {
+        "type": "ocr_items",
+        "items": items,
+        "raw_text": raw_text or f"[Gemini structured OCR: {len(items)} items]",
+    })
 
-    msg = f"📸 Struk terbaca! {len(saved_items)} item tercatat:\n\n"
-    for item in saved_items:
-        msg += f"  • {item['nama']}: {format_rupiah(item['harga'])}\n"
-    msg += f"\n💸 Total: {format_rupiah(total)}"
-
-    daily = hitung_total_hari_ini(phone)
-    msg += f"\n\n📊 Total hari ini: {format_rupiah(daily['pengeluaran'])}"
-
-    return msg
+    return replace_warning + format_ocr_preview(items, ocr_label)
 
 
 # ─────────────────────────────────────────────
@@ -595,12 +770,53 @@ async def handle_incoming_message(payload: dict):
 
         elif msg_type == "image":
             media_url = payload.get("mediaUrl", "")
+            base64_data = None
+
             if not media_url:
-                media_url = payload.get("media", "")
-            if not media_url:
+                media_raw = payload.get("media", "")
+                # GOWS sends media as dict with url/mimetype/base64 fields
+                if isinstance(media_raw, dict):
+                    logger.info(f"GOWS media dict keys: {list(media_raw.keys())}")
+                    media_url = media_raw.get("url", "") or media_raw.get("directDownloadURL", "")
+                    if not media_url and media_raw.get("base64"):
+                        base64_data = media_raw["base64"]
+                        logger.info("Got base64 media from payload.media dict")
+                    elif not media_url and media_raw.get("data"):
+                        base64_data = media_raw["data"]
+                        logger.info("Got base64 data from payload.media dict")
+                elif isinstance(media_raw, str) and media_raw:
+                    # String — could be URL or base64
+                    if media_raw.startswith("http://") or media_raw.startswith("https://"):
+                        media_url = media_raw
+                    elif media_raw.startswith("data:") or len(media_raw) > 500:
+                        base64_data = media_raw
+                        logger.info("Got base64 media data string from payload.media")
+
+            if not media_url and not base64_data:
                 media_url = payload.get("_data", {}).get("mediaData", {}).get("mediaUrl", "")
 
-            response = await handle_image_message(phone, media_url)
+            # Also check _data.Message for image message data
+            if not media_url and not base64_data:
+                _data = payload.get("_data", {})
+                if isinstance(_data, str):
+                    import json as _json
+                    try:
+                        _data = _json.loads(_data)
+                    except Exception:
+                        _data = {}
+                msg_data = _data.get("Message", {})
+                if isinstance(msg_data, dict):
+                    img_msg = msg_data.get("imageMessage", {})
+                    if isinstance(img_msg, dict):
+                        # GOWS may have directDownloadURL or url
+                        media_url = img_msg.get("directDownloadURL", "") or img_msg.get("url", "")
+                        if not media_url and img_msg.get("mediaKey"):
+                            logger.info("Image has mediaKey but no direct URL — may need WAHA media API")
+
+            logger.info(f"Image processing: media_url={'yes' if media_url else 'no'}, base64={'yes' if base64_data else 'no'}")
+            # Quick response sambil tunggu OCR
+            await send_text(phone, "📸 Sedang membaca struk...")
+            response = await handle_image_message(phone, media_url, base64_data=base64_data)
             await send_text(phone, response)
 
         else:

@@ -17,14 +17,17 @@ CATEGORY_KEYWORDS = {
              "snack", "cemilan", "sarapan", "makan siang", "makan malam", "gofood", "grabfood",
              "resto", "kafe", "warung", "food", "drink", "coffee"],
     "transport": ["transport", "grab", "gojek", "ojek", "bensin", "parkir", "tol", "bus",
-                  "kereta", "mrt", "taksi", "bbm", "motor", "mobil", "angkot", "transjakarta"],
+                  "kereta", "mrt", "taksi", "bbm", "motor", "mobil", "angkot", "transjakarta",
+                  "pertamina", "shell", "vivo", "spbu", "solar", "pertalite", "pertamax",
+                  "dexlite", "turbo", "ron", "premium", "bio solar"],
     "shopping": ["belanja", "shopping", "supermarket", "indomaret", "alfamart", "toko",
-                 "market", "shopee", "tokopedia", "lazada", "bukalapak", "mall"],
+                 "market", "shopee", "tokopedia", "lazada", "bukalapak", "mall",
+                 "circle k", "circle-k", "minimarket", "mart", "family mart", "lawson"],
     "health": ["kesehatan", "obat", "dokter", "rumah sakit", "apotek", "vitamin",
-               "klinik", "medical", "checkup", "sakit", "therapi", "rawat"],
+               "klinik", "medical", "checkup", "sakit", "therapi", "rawat", "bpjs"],
     "entertainment": ["hiburan", "nonton", "film", "game", "musik", "spotify", "netflix",
                       "youtube", "karaoke", "bioskop", "liburan", "jalan-jalan", "wisata", "rekreasi"],
-    "bills": ["tagihan", "listrik", "air", "internet", "wifi", "pulsa", "bpjs", "cicilan",
+    "bills": ["tagihan", "listrik", "air", "internet", "wifi", "pulsa", "cicilan",
               "sewa", "kos", "kontrakan", "pdam", "telepon", "asuransi", "token", "paket data"],
     "education": ["pendidikan", "buku", "kursus", "sekolah", "kuliah", "training",
                   "seminar", "workshop", "spp", "les", "akademik"],
@@ -207,41 +210,98 @@ def parse_catatan(message: str, custom_categories: list = None) -> dict | None:
 def parse_ocr_items(text: str, custom_categories: list = None) -> list:
     """
     Parse teks OCR struk jadi list item pengeluaran.
+    Mendukung berbagai format struk Indonesia.
     """
     items = []
     lines = text.strip().split("\n")
 
-    skip_words = ["total", "subtotal", "pajak", "tax", "cash", "kembali",
-                  "change", "kartu", "debit", "qris", "bayar", "payment"]
+    # Skip words — headers, footers, payment info
+    skip_words = [
+        "total", "subtotal", "sub total", "pajak", "tax", "ppn",
+        "cash", "kembali", "change", "kartu", "debit", "qris",
+        "bayar", "payment", "tunai", "non tunai", "e-money",
+        "struk", "receipt", "nota", "invoice", "faktur",
+        "kasir", "cashier", "operator", "no.", "nomor",
+        "terima kasih", "thank you", "kembali lagi",
+        "member", "diskon", "discount", "promo", "potongan",
+        "grand total", "jumlah", "qty", "harga", "price",
+        "tanggal", "date", "waktu", "time", "jam",
+    ]
+
+    # Common item patterns
+    # Pattern 1: "ITEM NAME    25.000" or "ITEM NAME    Rp25.000"
+    # Pattern 2: "2 x ITEM NAME    70.000" (qty x price)
+    # Pattern 3: "ITEM NAME    2    12.500    25.000" (name qty unit_price total)
 
     for line in lines:
         line = line.strip()
         if not line:
             continue
 
-        if any(w in line.lower() for w in skip_words):
+        line_lower = line.lower()
+
+        # Skip non-item lines
+        if any(w in line_lower for w in skip_words):
             continue
 
+        # Skip lines that are just numbers (like receipt number)
+        if re.match(r"^[\d\s\-./:]+$", line):
+            continue
+
+        # Skip very short lines (likely noise)
+        if len(line) < 3:
+            continue
+
+        # Extract all numbers from the line
         numbers = re.findall(r"[\d.,]+", line)
-        if numbers:
-            price_str = numbers[-1].replace(".", "").replace(",", "")
+        if not numbers:
+            continue
+
+        # Try to find the price — usually the last or second-to-last number
+        # Filter out very small numbers (likely quantity) and very large (likely receipt IDs)
+        price_candidates = []
+        for num_str in numbers:
+            cleaned = num_str.replace(".", "").replace(",", "")
             try:
-                price = int(price_str)
-                if 0 < price < 100000000:
-                    name_part = line
-                    for num in numbers:
-                        name_part = name_part.replace(num, "")
-                    name_part = name_part.strip(" -·*")
-                    if name_part:
-                        items.append({
-                            "nama": name_part,
-                            "harga": price,
-                            "kategori": detect_category(name_part, tx_type="expense", custom_categories=custom_categories),
-                        })
+                val = int(cleaned)
+                if 500 <= val < 100000000:  # Rp500 to Rp99.999.999 (filter noise < 500)
+                    price_candidates.append((num_str, val))
             except ValueError:
                 continue
 
-    return items
+        if not price_candidates:
+            continue
+
+        # Use the last valid price candidate (usually the total for that line)
+        price_str, price = price_candidates[-1]
+
+        # Extract item name: remove all numbers and clean up
+        name_part = line
+        for num in numbers:
+            name_part = name_part.replace(num, "")
+        # Clean up common separators and OCR artifacts
+        name_part = re.sub(r"[x×]\s*$", "", name_part)  # Remove trailing "x" (qty marker)
+        name_part = name_part.strip(" -·*.,:;x×@#")
+        # Collapse multiple spaces
+        name_part = re.sub(r"\s+", " ", name_part).strip()
+
+        if name_part and len(name_part) >= 2:
+            items.append({
+                "nama": name_part,
+                "harga": price,
+                "kategori": detect_category(name_part, tx_type="expense", custom_categories=custom_categories),
+            })
+
+    # Deduplicate items with same name (OCR sometimes reads same line twice)
+    seen = set()
+    unique_items = []
+    for item in items:
+        key = (item["nama"].lower(), item["harga"])
+        if key not in seen:
+            seen.add(key)
+            unique_items.append(item)
+
+    return unique_items
 
 
 def format_rupiah(amount: int) -> str:
